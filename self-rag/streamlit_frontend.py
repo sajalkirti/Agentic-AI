@@ -1,5 +1,7 @@
-import streamlit as st
-from streamlit_frontend import app
+#import streamlit_jupyter as st
+import nbimporter as st
+#import self_rag_step7   # imports functions/classes from the notebook
+from self_rag_step7  import app
 from langchain_core.messages import HumanMessage
 
 # st.session_state -> dict -> 
@@ -39,9 +41,12 @@ if user_input:
     "isuse": "not_useful",
     "use_reason": "",
 }
-    response = chatbot.invoke({'messages': [HumanMessage(content=user_input)]}, config=CONFIG)
+    result = app.invoke(
+    initial_state,
+    config={"recursion_limit": 80},  # allow revise → verify loops
+)
     
-    ai_message = response['messages'][-1].content
+    ai_message = result.get("answer")
     # first add the message to message_history
     st.session_state['message_history'].append({'role': 'assistant', 'content': ai_message})
     with st.chat_message('assistant'):
