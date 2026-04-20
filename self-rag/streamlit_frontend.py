@@ -1,5 +1,7 @@
 import streamlit as st
-from streamlit_frontend import app
+# import nbimporter as st
+#import self_rag_step7   # imports functions/classes from the notebook
+from self_rag_step7  import app
 from langchain_core.messages import HumanMessage
 
 # st.session_state -> dict -> 
@@ -26,23 +28,45 @@ if user_input:
         st.text(user_input)
 
     initial_state = {
-    "question": user_input,
-    "retrieval_query": "What is the refund policy of NexaAI",  # ✅ important
-    "rewrite_tries": 0,                                        # ✅ important
-    "docs": [],
-    "relevant_docs": [],
-    "context": "",
-    "answer": "",
-    "issup": "",
-    "evidence": [],
-    "retries": 0,
-    "isuse": "not_useful",
-    "use_reason": "",
-}
-    response = chatbot.invoke({'messages': [HumanMessage(content=user_input)]}, config=CONFIG)
+        "question": user_input,
+        "retrieval_query": "What is the refund policy of NexaAI",  # ✅ important
+        "rewrite_tries": 0,                                        # ✅ important
+        "docs": [],
+        "relevant_docs": [],
+        "context": "",
+        "answer": "",
+        "issup": "",
+        "evidence": [],
+        "retries": 0,
+        "isuse": "not_useful",
+        "use_reason": "",
+    }
+#     result = app.invoke(
+#     initial_state,
+#     config={"recursion_limit": 80},  # allow revise → verify loops
+# )
     
-    ai_message = response['messages'][-1].content
-    # first add the message to message_history
-    st.session_state['message_history'].append({'role': 'assistant', 'content': ai_message})
-    with st.chat_message('assistant'):
-        st.text(ai_message)
+#     ai_message = result.get("answer")
+#     # first add the message to message_history
+#     st.session_state['message_history'].append({'role': 'assistant', 'content': ai_message})
+#     with st.chat_message('assistant'):
+#         st.text(ai_message)
+
+# Stream the answer instead of invoking once
+    # Stream directly into the assistant chat bubble
+    with st.chat_message("assistant"):
+        ai_message = st.write_stream(
+            # generator expression: yield only the "answer" strings
+            item["generate_direct"]["answer"]
+            for item in app.stream(
+                initial_state,
+                config={"recursion_limit": 80}
+            )
+            if "generate_direct" in item and "answer" in item["generate_direct"]
+        )
+    
+    # Save the final concatenated answer into history
+    st.session_state['message_history'].append({
+        "role": "assistant",
+        "content": ai_message
+    })

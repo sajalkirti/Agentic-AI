@@ -2,3 +2,4 @@ self-rag/.env
 .venv
 myenv
 
+self-rag/__pycache__
