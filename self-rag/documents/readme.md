@@ -14,3 +14,5 @@ gpt-4o-mini
 https://console.cloud.google.com/
 
 pip install faiss-cpu
+pip install "unstructured[all]"
+pip install msoffcrypto-tool

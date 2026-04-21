@@ -8,7 +8,9 @@ from typing import List, TypedDict, Literal
 from pydantic import BaseModel, Field
 import os
 import pprint
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import UnstructuredExcelLoader
+
+#from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -32,18 +34,32 @@ project_folder = os.path.join(os.path.dirname(__file__), "documents")
 print("Project folder:", project_folder)
 # In[49]:
 # List of PDF filenames
-pdf_files = [
-    "Company_Policies.pdf",
-    "Company_Profile.pdf",
-    "Product_and_Pricing.pdf",
+# pdf_files = [
+#     "Company_Policies.pdf",
+#     "Company_Profile.pdf",
+#     "Product_and_Pricing.pdf",
+# ]
+
+xlsx_files = [
+    "ApplicationLog.xlsx",
+    "DBLog.xlsx",
+    "LogAnalytics.xlsx",
 ]
 
-# Load all PDFs generically
+# # Load all PDFs generically
+# docs = []
+# for filename in pdf_files:
+#     file_path = os.path.join(project_folder, filename)
+#     loader = PyPDFLoader(file_path)
+#     docs.extend(loader.load())
+import pandas as pd
+
 docs = []
-for filename in pdf_files:
+for filename in xlsx_files:
     file_path = os.path.join(project_folder, filename)
-    loader = PyPDFLoader(file_path)
+    loader = UnstructuredExcelLoader(file_path)
     docs.extend(loader.load())
+
 
 
 
