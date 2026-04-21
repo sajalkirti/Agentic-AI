@@ -149,7 +149,7 @@ direct_generation_prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             "Answer using only your general knowledge.\n"
-            "If it requires specific company info, say:\n"
+            "If it requires specific other info, say:\n"
             "'I don't know based on my general knowledge.'"
         ),
         ("human", "{question}"),
