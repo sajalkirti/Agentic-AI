@@ -7,7 +7,7 @@
 from typing import List, TypedDict, Literal
 from pydantic import BaseModel, Field
 import os
-
+import pprint
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -27,11 +27,24 @@ load_dotenv()
 # -----------------------------
 # Load + chunk + embed
 # -----------------------------
-docs = (
-    PyPDFLoader("C:/Sajal/Project/Agentic AI/self-rag/documents/Company_Policies.pdf").load()
-    + PyPDFLoader("C:/Sajal/Project/Agentic AI/self-rag/documents/Company_Profile.pdf").load()
-    + PyPDFLoader("C:/Sajal/Project/Agentic AI/self-rag/documents/Product_and_Pricing.pdf").load()
-)
+# Base project folder (relative path from your working directory)
+project_folder = os.path.join(os.path.dirname(__file__), "documents")
+print("Project folder:", project_folder)
+# In[49]:
+# List of PDF filenames
+pdf_files = [
+    "Company_Policies.pdf",
+    "Company_Profile.pdf",
+    "Product_and_Pricing.pdf",
+]
+
+# Load all PDFs generically
+docs = []
+for filename in pdf_files:
+    file_path = os.path.join(project_folder, filename)
+    loader = PyPDFLoader(file_path)
+    docs.extend(loader.load())
+
 
 
 # In[50]:
@@ -577,9 +590,11 @@ g.add_conditional_edges(
 
 # rewrite -> retrieve -> relevance -> ...
 g.add_edge("rewrite_question", "retrieve")
-
+# In[64]:
 app = g.compile()
 app
+
+
 
 
 # In[65]:

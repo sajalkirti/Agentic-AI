@@ -29,7 +29,7 @@ if user_input:
 
     initial_state = {
         "question": user_input,
-        "retrieval_query": "What is the refund policy of NexaAI",  # ✅ important
+        "retrieval_query": user_input,  # ✅ important
         "rewrite_tries": 0,                                        # ✅ important
         "docs": [],
         "relevant_docs": [],
@@ -60,7 +60,7 @@ if user_input:
             item["generate_direct"]["answer"]
             for item in app.stream(
                 initial_state,
-                config={"recursion_limit": 80}
+                config={"recursion_limit": 10}
             )
             if "generate_direct" in item and "answer" in item["generate_direct"]
         )
