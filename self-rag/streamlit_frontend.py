@@ -41,32 +41,32 @@ if user_input:
         "isuse": "not_useful",
         "use_reason": "",
     }
-#     result = app.invoke(
-#     initial_state,
-#     config={"recursion_limit": 80},  # allow revise → verify loops
-# )
+    result = app.invoke(
+    initial_state,
+    config={"recursion_limit": 80},  # allow revise → verify loops
+    )
     
-#     ai_message = result.get("answer")
-#     # first add the message to message_history
-#     st.session_state['message_history'].append({'role': 'assistant', 'content': ai_message})
-#     with st.chat_message('assistant'):
-#         st.text(ai_message)
+    ai_message = result.get("answer")
+    # first add the message to message_history
+    st.session_state['message_history'].append({'role': 'assistant', 'content': ai_message})
+    with st.chat_message('assistant'):
+        st.text(ai_message)
 
-# Stream the answer instead of invoking once
-    # Stream directly into the assistant chat bubble
-    with st.chat_message("assistant"):
-        ai_message = st.write_stream(
-            # generator expression: yield only the "answer" strings
-            item["generate_direct"]["answer"]
-            for item in app.stream(
-                initial_state,
-                config={"recursion_limit": 10}
-            )
-            if "generate_direct" in item and "answer" in item["generate_direct"]
-        )
+# # Stream the answer instead of invoking once
+#     # Stream directly into the assistant chat bubble
+#     with st.chat_message("assistant"):
+#         ai_message = st.write_stream(
+#             # generator expression: yield only the "answer" strings
+#             item["generate_direct"]["answer"]
+#             for item in app.stream(
+#                 initial_state,
+#                 config={"recursion_limit": 80}
+#             )
+#             if "generate_direct" in item and "answer" in item["generate_direct"]
+#         )
     
-    # Save the final concatenated answer into history
-    st.session_state['message_history'].append({
-        "role": "assistant",
-        "content": ai_message
-    })
+#     # Save the final concatenated answer into history
+#     st.session_state['message_history'].append({
+#         "role": "assistant",
+#         "content": ai_message
+#     })

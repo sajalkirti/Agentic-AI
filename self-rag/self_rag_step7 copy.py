@@ -80,7 +80,7 @@ chunks = RecursiveCharacterTextSplitter(
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 vector_store = FAISS.from_documents(chunks, embeddings)
-retriever = vector_store.as_retriever(search_kwargs={"k": 10})
+retriever = vector_store.as_retriever(search_kwargs={"k": 4})
 
 
 # In[52]:
@@ -138,7 +138,7 @@ decide_retrieval_prompt = ChatPromptTemplate.from_messages(
             "You decide whether retrieval is needed.\n"
             "Return JSON with key: should_retrieve (boolean).\n\n"
             "Guidelines:\n"
-            "- should_retrieve=True if answering requires specific facts from log documents attached.\n"
+            "- should_retrieve=True if answering requires specific facts from company documents.\n"
             "- should_retrieve=False for general explanations/definitions.\n"
             "- If unsure, choose True."
         ),
@@ -202,8 +202,7 @@ def retrieve(state: State):
 class RelevanceDecision(BaseModel):
     is_relevant: bool = Field(
         ...,
-        description="True ONLY if the document contains info that can directly answer the question.  \n"
-        "If UserId or correlationId in the logs match those in the question, consider it as relevant."
+        description="True ONLY if the document contains info that can directly answer the question."
     )
 
 is_relevant_prompt = ChatPromptTemplate.from_messages(
@@ -214,7 +213,6 @@ is_relevant_prompt = ChatPromptTemplate.from_messages(
             "Return JSON matching the schema.\n\n"
             "You will be given a user-reported issue and multiple logs (DB log, application log, log analytical log).\n"
             "Your task is to analyze the logs and determine what could be the root cause of the issue.\n\n"
-            "Give more focus on userId and correlationId if available in the logs and available in the question.\n\n"
             "Guidelines:\n"
             "- Look for errors, exceptions, or anomalies in the logs.\n"
             "- Cross-reference the user’s issue with log entries.\n"
@@ -265,7 +263,6 @@ rag_generation_prompt = ChatPromptTemplate.from_messages(
             "system",
             "You are an AI assistant diagnosing application issues from logs.\n\n"
             "You will receive a CONTEXT block containing DB logs, application logs, and log analytical logs.\n"
-            "If question contains specific userId or correlationId or both, prioritize finding relevant info in the logs related to those identifiers.\n\n"
             "Task:\n"
             "Read the logs and generate a context relevant to the queried error.\n"
             "Identify what could be the root cause of the issue based on the evidence in the logs.\n"
@@ -311,7 +308,6 @@ issup_prompt = ChatPromptTemplate.from_messages(
             "How to decide issup:\n"
             "- fully_supported:\n"
             "  The error identified in the logs directly matches the user’s reported issue with clear evidence.\n"
-            "  If question and context contain specific userId or correlationId or both, consider that as fully_supported.\n"
             "- partially_supported:\n"
             "  The error identified in the logs is related to the user’s issue but does not fully confirm it.\n"
             "- no_support:\n"
@@ -350,7 +346,6 @@ MAX_RETRIES = 10
 
 def route_after_issup(state: State) -> Literal["accept_answer", "revise_answer"]:
     # fully supported -> move forward to IsUSE (via "accept_answer" label)
-    print(f"ISSUP decision: {state.get('issup')}, retries: {state.get('retries', 0)}")
     if state.get("issup") == "fully_supported":
         return "accept_answer"
 
@@ -453,7 +448,6 @@ def is_use(state: State):
             answer=state.get("answer", ""),
         )
     )
-    print(f"IsUSE decision: {decision.isuse}, reason: {decision.reason}")
     return {"isuse": decision.isuse, "use_reason": decision.reason}
 
 MAX_REWRITE_TRIES = 3  # tune (2–4 is usually fine)
@@ -632,81 +626,81 @@ app
 # -----------------------------
 # Run the graph
 # -----------------------------
-# initial_state = {
-#     "question": '''sajaltest@shellfleet.com was trying to create a user and got issue.
-# can you tell me the issue caused''',
-#     "retrieval_query": '''sajaltest@shellfleet.com was trying to create a user and got issue.
-# can you tell me the issue caused''',  # ✅ important
-#     "rewrite_tries": 0,                                        # ✅ important
-#     "docs": [],
-#     "relevant_docs": [],
-#     "context": "",
-#     "answer": "",
-#     "issup": "",
-#     "evidence": [],
-#     "retries": 0,
-#     "isuse": "not_useful",
-#     "use_reason": "",
-# }
+initial_state = {
+    "question": '''sajaltest@shellfleet.com was trying to create a user and got issue.
+can you tell me the issue caused''',
+    "retrieval_query": '''sajaltest@shellfleet.com was trying to create a user and got issue.
+can you tell me the issue caused''',  # ✅ important
+    "rewrite_tries": 0,                                        # ✅ important
+    "docs": [],
+    "relevant_docs": [],
+    "context": "",
+    "answer": "",
+    "issup": "",
+    "evidence": [],
+    "retries": 0,
+    "isuse": "not_useful",
+    "use_reason": "",
+}
 
-# #In[66]:
-# result = app.invoke(
-#     initial_state,
-#     config={"recursion_limit": 80},  # allow revise → verify loops
-# )
+#In[66]:
+result = app.invoke(
+    initial_state,
+    config={"recursion_limit": 80},  # allow revise → verify loops
+)
 
-# # -----------------------------
-# # Debug / inspection output (clean + complete)
-# # -----------------------------
-# print("\n===== RAG EXECUTION RESULT =====\n")
+# -----------------------------
+# Debug / inspection output (clean + complete)
+# -----------------------------
+print("\n===== RAG EXECUTION RESULT =====\n")
 
-# print("Question:", initial_state.get("question"))
-# print("Need Retrieval:", result.get("need_retrieval"))
+print("Question:", initial_state.get("question"))
+print("Need Retrieval:", result.get("need_retrieval"))
 
-# # In[67]:
-# # # If you added these counters/fields in your State:
-# # print("Rewrite tries (retrieval):", result.get("rewrite_tries", 0))
-# # print("Support revise tries:", result.get("retries", 0))
+# In[67]:
+# # If you added these counters/fields in your State:
+# print("Rewrite tries (retrieval):", result.get("rewrite_tries", 0))
+# print("Support revise tries:", result.get("retries", 0))
 
-# print("\nRetrieval:")
-# print("  Total retrieved docs:", len(result.get("docs", []) or []))
-# print("  Relevant docs:", len(result.get("relevant_docs", []) or []))
+print("\nRetrieval:")
+print("  Total retrieved docs:", len(result.get("docs", []) or []))
+print("  Relevant docs:", len(result.get("relevant_docs", []) or []))
 
-# # # Optional: show sources/pages for relevant docs
-# relevant_docs = result.get("relevant_docs", []) or []
-# # if relevant_docs:
-# #     print("\nRelevant docs (source/page):")
-# #     for i, d in enumerate(relevant_docs, 1):
-# #         src = (d.metadata or {}).get("source", "unknown")
-# #         page = (d.metadata or {}).get("page", None)
-# #         title = (d.metadata or {}).get("title", "")
-# #         extra = f", title={title}" if title else ""
-# #         if page is not None:
-# #             print(f"  {i}. source={src}, page={page}{extra}")
-# #         else:
-# #             print(f"  {i}. source={src}{extra}")
+# # Optional: show sources/pages for relevant docs
+relevant_docs = result.get("relevant_docs", []) or []
+# if relevant_docs:
+#     print("\nRelevant docs (source/page):")
+#     for i, d in enumerate(relevant_docs, 1):
+#         src = (d.metadata or {}).get("source", "unknown")
+#         page = (d.metadata or {}).get("page", None)
+#         title = (d.metadata or {}).get("title", "")
+#         extra = f", title={title}" if title else ""
+#         if page is not None:
+#             print(f"  {i}. source={src}, page={page}{extra}")
+#         else:
+#             print(f"  {i}. source={src}{extra}")
 
-# # print("\nVerification (IsSUP):")
-# # print("  issup:", result.get("issup"))
-# # evidence = result.get("evidence", []) or []
-# # if evidence:
-# #     print("  evidence:")
-# #     for e in evidence:
-# #         print("   -", e)
-# # else:
-# #     print("  evidence: (none)")
+# print("\nVerification (IsSUP):")
+# print("  issup:", result.get("issup"))
+# evidence = result.get("evidence", []) or []
+# if evidence:
+#     print("  evidence:")
+#     for e in evidence:
+#         print("   -", e)
+# else:
+#     print("  evidence: (none)")
 
-# # print("\nUsefulness (IsUSE):")
-# # print("  isuse:", result.get("isuse"))
-# # print("  reason:", result.get("use_reason", ""))
+# print("\nUsefulness (IsUSE):")
+# print("  isuse:", result.get("isuse"))
+# print("  reason:", result.get("use_reason", ""))
 
-# print("\nFinal Answer:")
-# print(result.get("answer"))
+print("\nFinal Answer:")
+print(result.get("answer"))
 
-# # print("\n===============================\n")
+# print("\n===============================\n")
 
 
-# # # In[ ]:
+# # In[ ]:
 
 
 
