@@ -1,0 +1,11 @@
+streamlit
+pydantic
+langchain_community
+langchain_openai
+langgraph
+pypdf
+faiss-cpu
+openpyxl
+unstructured
+networkx
+msoffcrypto-tool
