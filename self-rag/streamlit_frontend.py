@@ -26,7 +26,10 @@ if user_input:
     st.session_state['message_history'].append({'role': 'user', 'content': user_input})
     with st.chat_message('user'):
         st.text(user_input)
-
+    
+    scroll_anchor = st.empty()
+    scroll_anchor.markdown("")
+    
     initial_state = {
         "question": user_input,
         "retrieval_query": user_input,  # ✅ important
@@ -41,11 +44,12 @@ if user_input:
         "isuse": "not_useful",
         "use_reason": "",
     }
-    result = app.invoke(
-    initial_state,
-    config={"recursion_limit": 80},  # allow revise → verify loops
-    )
-    
+    with st.spinner("Preparing response..."):
+        result = app.invoke(
+        initial_state,
+        config={"recursion_limit": 80},  # allow revise → verify loops
+        )
+
     ai_message = result.get("answer")
     # first add the message to message_history
     st.session_state['message_history'].append({'role': 'assistant', 'content': ai_message})
