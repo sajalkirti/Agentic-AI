@@ -57,9 +57,29 @@ import pandas as pd
 docs = []
 for filename in xlsx_files:
     file_path = os.path.join(project_folder, filename)
-    loader = UnstructuredExcelLoader(file_path)
-    docs.extend(loader.load())
+  #  loader = UnstructuredExcelLoader(file_path)
+   # docs.extend(loader.load())
+   
+   ############################ Adding improvements - needs review ######################################
+import pandas as pd
+from langchain_core.documents import Document
 
+docs = []
+
+for filename in xlsx_files:
+    file_path = os.path.join(project_folder, filename)
+    df = pd.read_excel(file_path)
+
+    for _, row in df.iterrows():
+        content = " | ".join([f"{col}: {row[col]}" for col in df.columns])
+
+        docs.append(
+            Document(
+                page_content=content,
+                metadata={"source": filename}
+            )
+        )
+############################ END Adding improvements - needs review ######################################
 # In[49]:
 print(f"Total documents loaded: {len(docs)}")
 print(f"{docs[0].page_content[:500]}...")  # print the first 500 characters of the first document as a sample
@@ -70,26 +90,87 @@ print(f"{docs[0].page_content[:500]}...")  # print the first 500 characters of t
 # In[50]:
 
 
-chunks = RecursiveCharacterTextSplitter(
-    chunk_size=600, chunk_overlap=150
-).split_documents(docs)
+# chunks = RecursiveCharacterTextSplitter(
+ #   chunk_size=600, chunk_overlap=150
+#).split_documents(docs)
+############################ Adding improvements - needs review ######################################
 
+# -----------------------------
+# Correlation-aware grouping (REPLACES chunking)
+# -----------------------------
+import re
+from langchain_core.documents import Document
+
+def normalize(text: str) -> str:
+    return (
+        text.replace("ERROR", "[ERROR]")
+            .replace("WARN", "[WARN]")
+            .replace("Exception", "[EXCEPTION]")
+    )
+
+def group_by_correlation(docs):
+    grouped = {}
+
+    for doc in docs:
+        text = normalize(doc.page_content)
+
+        #  take ONLY the FIRST correlation ID
+        match = re.search(r'CorrelationId\s*=\s*(REQ-[A-Z0-9]+)', text)
+
+        cid = match.group(1) if match else "UNKNOWN"
+
+        grouped.setdefault(cid, []).append(text)
+
+    grouped_docs = []
+    for cid, logs in grouped.items():
+        grouped_docs.append(
+            Document(
+                page_content="\n".join(logs),
+                metadata={"correlation_id": cid}
+            )
+        )
+
+    return grouped_docs
+
+
+# ✅ Use grouped logs instead of chunks
+chunks = group_by_correlation(docs)
+
+print(f"Total grouped documents (by CorrelationId): {len(chunks)}") 
+
+############################ END Adding improvements - needs review ######################################
 
 # In[51]:
 
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 vector_store = FAISS.from_documents(chunks, embeddings)
-retriever = vector_store.as_retriever(search_kwargs={"k": 10})
-
+# retriever = vector_store.as_retriever(search_kwargs={"k": 15})
+############################ Adding improvements - needs review ######################################
+retriever = vector_store.as_retriever(
+    search_type="mmr",
+    search_kwargs={
+        "k": 20,
+        "fetch_k": 50,
+        "lambda_mult": 0.7
+    }
+)
+############################ END Adding improvements - needs review ######################################
 
 # In[52]:
 
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0,api_key=openai_api_key)
-
-
+# llm = ChatOpenAI(model="gpt-4o-mini", temperature=0,api_key=openai_api_key)
+############################ Adding improvements - needs review ######################################
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0,
+    max_tokens=1000,
+    top_p=0.9,
+    api_key=openai_api_key
+)
+############################ END Adding improvements - needs review ######################################
 # In[53]:
 
 
@@ -187,12 +268,38 @@ def generate_direct(state: State):
 # -----------------------------
 # 3) Retrieve
 # -----------------------------
+#def retrieve(state: State):
+ #   q = state.get("retrieval_query") or state["question"]
+  #  return {"docs": retriever.invoke(q)}
+
+############################ Adding improvements - needs review ######################################
 def retrieve(state: State):
-    q = state.get("retrieval_query") or state["question"]
-    return {"docs": retriever.invoke(q)}
+    import re
 
+    query = state.get("retrieval_query") or state["question"]
 
+    # ----------------------------
+    # 1. TRY CORRELATION ID MATCH FIRST (CRITICAL FIX)
+    # ----------------------------
+    match = re.search(r"(REQ-[A-Z0-9]+)", query)
 
+    if match:
+        cid = match.group(1)
+
+        matched_docs = [
+            doc for doc in chunks
+            if doc.metadata.get("correlation_id") == cid
+        ]
+
+        if matched_docs:
+            return {"docs": matched_docs}
+
+    # ----------------------------
+    # 2. FALLBACK: SEMANTIC SEARCH
+    # ----------------------------
+    return {"docs": retriever.invoke(query)}
+
+############################ Adding improvements - needs review ######################################
 # In[57]:
 
 
