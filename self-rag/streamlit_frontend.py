@@ -3,7 +3,7 @@ import html
 from self_rag_step7 import app
 
 # -----------------------------
-# PAGE CONFIG (FIXED)
+# PAGE CONFIG
 # -----------------------------
 st.set_page_config(
     page_title="🚀 SRE Log Analyzer",
@@ -31,8 +31,7 @@ st.divider()
 # HELPER
 # -----------------------------
 def format_message(text):
-    text = html.escape(text)
-    return text.replace("\n", "<br>")
+    return html.escape(text).replace("\n", "<br>")
 
 # -----------------------------
 # SESSION STATE
@@ -41,7 +40,7 @@ if "message_history" not in st.session_state:
     st.session_state.message_history = []
 
 # -----------------------------
-# CUSTOM UI (CLEANED)
+# CUSTOM UI
 # -----------------------------
 st.markdown("""
 <style>
@@ -74,24 +73,43 @@ st.markdown("""
 # SHOW CHAT HISTORY
 # -----------------------------
 for msg in st.session_state.message_history:
-    if msg["role"] == "user":
+
+    # -------------------------
+    # SAFE NORMALIZATION
+    # -------------------------
+    if isinstance(msg, dict):
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+    else:
+        # fallback if string or broken entry
+        role = "assistant"
+        content = str(msg)
+
+    # -------------------------
+    # RENDER USER MESSAGE
+    # -------------------------
+    if role == "user":
         st.markdown(f"""
         <div class="message-row message-row-user">
-            <div class="user-message">{format_message(msg['content'])}</div>
+            <div class="user-message">{format_message(content)}</div>
         </div>
         """, unsafe_allow_html=True)
+
+    # -------------------------
+    # RENDER ASSISTANT MESSAGE
+    # -------------------------
     else:
         st.markdown(f"""
         <div class="message-row message-row-assistant">
             <div>
-                <div class="badge">🤖LogAnalyzer</div>
-                <div class="assistant-message">{format_message(msg['content'])}</div>
+                <div class="badge">🤖 LogAnalyzer</div>
+                <div class="assistant-message">{format_message(content)}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
 # -----------------------------
-# INPUT BOX
+# INPUT
 # -----------------------------
 user_input = st.chat_input("Ask about logs, errors, CorrelationId, driver issues...")
 
@@ -102,7 +120,7 @@ if user_input:
         {"role": "user", "content": user_input}
     )
 
-    # Show user message
+    # Display user message immediately
     st.markdown(f"""
     <div class="message-row message-row-user">
         <div class="user-message">{format_message(user_input)}</div>
@@ -110,7 +128,7 @@ if user_input:
     """, unsafe_allow_html=True)
 
     # -----------------------------
-    # GRAPH STATE (IMPORTANT - KEEP SAME)
+    # GRAPH INPUT STATE (CLEAN)
     # -----------------------------
     initial_state = {
         "question": user_input,
@@ -125,6 +143,7 @@ if user_input:
         "retries": 0,
         "isuse": "not_useful",
         "use_reason": "",
+        "message_history": st.session_state.message_history,
     }
 
     # -----------------------------
@@ -136,15 +155,22 @@ if user_input:
             config={"recursion_limit": 80},
         )
 
+    # -----------------------------
+    # UPDATE CHAT HISTORY (IMPORTANT FIX)
+    # -----------------------------
+    st.session_state.message_history = result.get(
+    "message_history",
+    st.session_state.message_history
+    )
+
     ai_message = result.get("answer", "No response generated.")
 
-    # Save assistant message
     st.session_state.message_history.append(
         {"role": "assistant", "content": ai_message}
     )
 
     # -----------------------------
-    # SHOW ASSISTANT RESPONSE
+    # DISPLAY RESPONSE
     # -----------------------------
     st.markdown(f"""
     <div class="message-row message-row-assistant">
@@ -156,7 +182,7 @@ if user_input:
     """, unsafe_allow_html=True)
 
     # -----------------------------
-    # DEBUG INFO (VERY IMPORTANT FOR SRE DEMO)
+    # DEBUG INFO
     # -----------------------------
     st.divider()
 
