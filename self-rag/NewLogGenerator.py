@@ -1,140 +1,144 @@
 import pandas as pd
 import uuid
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 
+# -----------------------------
+# CONFIG
+# -----------------------------
 project_folder = os.path.join(os.path.dirname(__file__), "documents")
 
-app_df = pd.read_excel(os.path.join(project_folder, "ApplicationLog.xlsx"))
-analytics_df = pd.read_excel(os.path.join(project_folder, "LogAnalytics.xlsx"))
-db_df = pd.read_excel(os.path.join(project_folder, "DBLog.xlsx"))
+NUM_INCIDENTS = 120
+STEPS_RANGE = (3, 5)
+
+base_time = datetime.now()
 
 # -----------------------------
-# FIXED: ONE correlation = ONE request flow
+# FLEET ENTITIES
 # -----------------------------
-def generate_correlation_id():
-    return f"REQ-{uuid.uuid4().hex[:8].upper()}"
+drivers = [f"driver_{i}" for i in range(1, 80)]
+vehicles = [f"BH-FL-{str(i).zfill(4)}" for i in range(1, 200)]
+merchants = [
+    "EV Charging Hub",
+    "Highway Toll Plaza",
+    "City Parking Zone",
+    "Fuel Station",
+    "Battery Swap Center"
+]
 
-# -----------------------------
-# Predefine real failure chains (IMPORTANT)
-# -----------------------------
-incident_flows = [
-    {
-        "event": "Profile Updated",
-        "root_cause": "NullReferenceException",
-        "db_error": "Cannot insert NULL into non-nullable column",
-        "analytics_error": "Profile update anomaly detected",
-        "method_chain": [
-            "AuthController.Login",
-            "UserController.UpdateProfile",
-            "UserService.Save",
-            "UserRepository.UpdateProfile"
-        ]
-    },
-    {
-        "event": "Transaction Failed",
-        "root_cause": "Timeout",
-        "db_error": "Execution timeout expired",
-        "analytics_error": "Transaction delay spike detected",
-        "method_chain": [
-            "CardController.ProcessTransaction",
-            "CardService.Execute",
-            "CardRepository.InsertTransaction"
-        ]
-    },
-    {
-        "event": "Card Blocked",
-        "root_cause": "Fraud detection trigger",
-        "db_error": "Lock timeout",
-        "analytics_error": "Fraud model triggered block event",
-        "method_chain": [
-            "CardController.BlockCard",
-            "CardService.Block",
-            "CardRepository.BlockCard"
-        ]
-    },
+methods = [
+    "WalletController.Debit",
+    "PaymentController.Process",
+    "TollController.Pay",
+    "ChargingController.StartSession",
+    "BookingController.ReserveSlot"
+]
+
+events = [
+    "Wallet Debit",
+    "Charging Started",
+    "Toll Payment",
+    "Parking Entry",
+    "Fuel Purchase"
+]
+
+errors = [
+    "InsufficientBalanceException",
+    "TimeoutException",
+    "PaymentGatewayFailure",
+    "RFIDReadFailure",
+    "SessionExpiredException"
 ]
 
 # -----------------------------
-# LOG BUILDERS
+# STACK TRACE BUILDER
 # -----------------------------
-def build_app_log(row, cid, flow):
-    method = random.choice(flow["method_chain"])
-
-    if row["Level"] == "ERROR":
-        details = (
-            f"{row['Details']} | CorrelationId={cid} | Method={method} | "
-            f"{flow['root_cause']}"
-        )
-    else:
-        details = f"{row['Details']} | CorrelationId={cid} | Method={method}"
-
-    return {
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Module": row["Module"],
-        "Level": row["Level"],
-        "Event": row["Event"],
-        "Details": details
-    }
-
-def build_analytics_log(row, cid, flow):
-    method = random.choice(flow["method_chain"])
-
-    details = (
-        f"{row['Details']} | CorrelationId={cid} | Method={method} | "
-        f"{flow['analytics_error'] if row['Level']=='ERROR' else 'OK'}"
-    )
-
-    return {
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Module": row["Module"],
-        "Level": row["Level"],
-        "Event": row["Event"],
-        "User/Card": row["User/Card"],
-        "Details": details
-    }
-
-def build_db_log(row, cid, flow):
-    method = random.choice(flow["method_chain"])
-
-    details = (
-        f"{row['Details']} | CorrelationId={cid} | Method={method} | "
-        f"SQL={row['SQL Operation']} | "
-        f"{flow['db_error'] if row['Status']=='ERROR' else 'OK'}"
-    )
-
-    return {
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "SQL Operation": row["SQL Operation"],
-        "Status": row["Status"],
-        "Details": details
-    }
+def stack_trace(error):
+    return f"""{error}: Transaction failed
+   at FleetCore.Controllers.PaymentController.Process()
+   at FleetCore.Services.WalletService.Debit()
+   at FleetCore.Repositories.TransactionRepository.Save()"""
 
 # -----------------------------
-# GENERATE INCIDENT-BASED LOGS
+# CORRELATION ID
 # -----------------------------
-enhanced_app_logs = []
-enhanced_analytics_logs = []
-enhanced_db_logs = []
+def cid():
+    return f"CID-{uuid.uuid4().hex[:8].upper()}"
 
-for flow in incident_flows:
-    cid = generate_correlation_id()
-
-    # pick random rows but KEEP SAME CID (IMPORTANT FIX)
-    app_row = app_df.sample(1).iloc[0]
-    analytics_row = analytics_df.sample(1).iloc[0]
-    db_row = db_df.sample(1).iloc[0]
-
-    enhanced_app_logs.append(build_app_log(app_row, cid, flow))
-    enhanced_analytics_logs.append(build_analytics_log(analytics_row, cid, flow))
-    enhanced_db_logs.append(build_db_log(db_row, cid, flow))
+def ts(i, j):
+    return (base_time + timedelta(seconds=i*30 + j*3)).strftime("%Y-%m-%d %H:%M:%S")
 
 # -----------------------------
-# SAVE OUTPUT
+# OUTPUT LISTS
 # -----------------------------
-pd.DataFrame(enhanced_app_logs).to_excel("EnhancedApplicationLog.xlsx", index=False)
-pd.DataFrame(enhanced_analytics_logs).to_excel("EnhancedLogAnalytics.xlsx", index=False)
-pd.DataFrame(enhanced_db_logs).to_excel("EnhancedDBLog.xlsx", index=False)
+app_logs = []
+analytics_logs = []
+db_logs = []
+MAX_LOGS_PER_CID = 5
+# -----------------------------
+# GENERATION
+# -----------------------------
+for i in range(NUM_INCIDENTS):
 
-print("SRE-grade correlated logs generated successfully!")
+    correlation = cid()
+    driver = random.choice(drivers)
+    vehicle = random.choice(vehicles)
+    merchant = random.choice(merchants)
+    event = random.choice(events)
+    error = random.choice(errors)
+
+    steps = min(random.randint(*STEPS_RANGE), MAX_LOGS_PER_CID)
+
+    for j in range(steps):
+
+        method = random.choice(methods)
+        time = ts(i, j)
+
+        is_error = (j == steps - 1)
+
+        # ---------------- APP LOG ----------------
+        app_logs.append({
+            "Timestamp": time,
+            "Module": "FleetApp",
+            "Level": "ERROR" if is_error else "INFO",
+            "Event": event,
+            "Details":
+                f"CID={correlation} | Driver={driver} | Vehicle={vehicle} | "
+                f"Merchant={merchant} | Step={j}/{steps} | Method={method} | "
+                f"{stack_trace(error) if is_error else 'Transaction in progress'}"
+        })
+
+        # ---------------- ANALYTICS LOG ----------------
+        analytics_logs.append({
+            "Timestamp": time,
+            "Module": "Analytics",
+            "Level": "ERROR" if is_error else "INFO",
+            "Event": event,
+            "User/Card": driver,
+            "Details":
+                f"CID={correlation} | Vehicle={vehicle} | "
+                f"Event={event} | Status={'FAILED' if is_error else 'OK'}"
+        })
+
+        # ---------------- DB LOG ----------------
+        db_logs.append({
+            "Timestamp": time,
+            "SQL Operation": random.choice(["SELECT", "UPDATE", "INSERT"]),
+            "Status": "ERROR" if is_error else "SUCCESS",
+            "Details":
+                f"CID={correlation} | DB Operation | Method={method} | "
+                f"{error if is_error else 'OK'}"
+        })
+
+# -----------------------------
+# SAVE
+# -----------------------------
+pd.DataFrame(app_logs).to_excel("EnhancedApplicationLog.xlsx", index=False)
+pd.DataFrame(analytics_logs).to_excel("EnhancedLogAnalytics.xlsx", index=False)
+pd.DataFrame(db_logs).to_excel("EnhancedDBLog.xlsx", index=False)
+
+print("🚀FINAL FLEET LOG GENERATION COMPLETE")
+print("App logs:", len(app_logs))
+print("Analytics logs:", len(analytics_logs))
+print("DB logs:", len(db_logs))

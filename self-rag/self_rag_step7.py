@@ -41,9 +41,9 @@ print("Project folder:", project_folder)
 # ]
 
 xlsx_files = [
-    "ApplicationLog.xlsx",
-    "DBLog.xlsx",
-    "LogAnalytics.xlsx",
+    "EnhancedApplicationLog.xlsx",
+    "EnhancedDBLog.xlsx",
+    "EnhancedLogAnalytics.xlsx",
 ]
 
 # # Load all PDFs generically
@@ -54,11 +54,32 @@ xlsx_files = [
 #     docs.extend(loader.load())
 import pandas as pd
 
-docs = []
-for filename in xlsx_files:
-    file_path = os.path.join(project_folder, filename)
+#docs = []
+#for filename in xlsx_files:
+ #   file_path = os.path.join(project_folder, filename)
   #  loader = UnstructuredExcelLoader(file_path)
    # docs.extend(loader.load())
+   
+docs = []
+
+for filename in xlsx_files:
+    file_path = os.path.join(project_folder, filename)
+    df = pd.read_excel(file_path)
+
+    for _, row in df.iterrows():
+        details = str(row["Details"])
+
+        docs.append(
+            Document(
+                page_content=details,
+                metadata={
+                    "source": filename,
+                    "timestamp": str(row.get("Timestamp", "")),
+                    "module": str(row.get("Module", "")),
+                    "level": str(row.get("Level", row.get("Status", "")))
+                }
+            )
+        )
    
    ############################ Adding improvements - needs review ######################################
 import pandas as pd
@@ -71,18 +92,24 @@ for filename in xlsx_files:
     df = pd.read_excel(file_path)
 
     for _, row in df.iterrows():
-        content = " | ".join([f"{col}: {row[col]}" for col in df.columns])
+        details = str(row["Details"])
 
         docs.append(
             Document(
-                page_content=content,
-                metadata={"source": filename}
+                page_content=details,
+                metadata={
+                    "source": filename,
+                    "timestamp": str(row.get("Timestamp", "")),
+                    "module": str(row.get("Module", "")),
+                    "level": str(row.get("Level", row.get("Status", "")))
+                }
             )
         )
 ############################ END Adding improvements - needs review ######################################
 # In[49]:
 print(f"Total documents loaded: {len(docs)}")
-print(f"{docs[0].page_content[:500]}...")  # print the first 500 characters of the first document as a sample
+if docs:
+    print(f"{docs[0].page_content[:500]}...")  # print the first 500 characters of the first document as a sample
 
 
 
@@ -115,9 +142,12 @@ def group_by_correlation(docs):
         text = normalize(doc.page_content)
 
         #  take ONLY the FIRST correlation ID
-        match = re.search(r'CorrelationId\s*=\s*(REQ-[A-Z0-9]+)', text)
+       # match = re.search(r'CorrelationId\s*=\s*(REQ-[A-Z0-9]+)', text)
+      #  match = re.search(r'CorrelationId\s*=\s*(CID-[A-Z0-9]+)', text)
+        match = re.search(r"(CID-[A-Z0-9]+|REQ-[A-Z0-9]+)", text)
 
         cid = match.group(1) if match else "UNKNOWN"
+    
 
         grouped.setdefault(cid, []).append(text)
 
@@ -281,7 +311,8 @@ def retrieve(state: State):
     # ----------------------------
     # 1. TRY CORRELATION ID MATCH FIRST (CRITICAL FIX)
     # ----------------------------
-    match = re.search(r"(REQ-[A-Z0-9]+)", query)
+    #match = re.search(r"(REQ-[A-Z0-9]+)", query)
+    match = re.search(r"(CID-[A-Z0-9]+|REQ-[A-Z0-9]+)", query)
 
     if match:
         cid = match.group(1)
@@ -453,7 +484,7 @@ def is_sup(state: State):
     return {"issup": decision.issup, "evidence": decision.evidence}
 
 
-MAX_RETRIES = 10
+MAX_RETRIES = 3
 
 def route_after_issup(state: State) -> Literal["accept_answer", "revise_answer"]:
     # fully supported -> move forward to IsUSE (via "accept_answer" label)
