@@ -1,198 +1,204 @@
 import streamlit as st
-import html
+
 from self_rag_step7 import app
 
-# -----------------------------
+# =========================================================
 # PAGE CONFIG
-# -----------------------------
+# =========================================================
+
 st.set_page_config(
-    page_title="🚀 SRE Log Analyzer",
-    page_icon="📊",
-    layout="centered",
-    initial_sidebar_state="collapsed"
+    page_title="ShellFleet Log Analyzer",
+    page_icon="🛠️",
+    layout="wide"
 )
 
-# -----------------------------
-# HEADER
-# -----------------------------
-st.markdown(
-    """
-    <div style="text-align:center;">
-        <h1>🚀 SRE Log Analyzer</h1>
-        <p style="color:gray;">AI-powered incident root cause analysis engine</p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.title("🛠️ ShellFleet Log Analyzer")
 
-st.divider()
+# =========================================================
+# CONFIG
+# =========================================================
 
-# -----------------------------
-# HELPER
-# -----------------------------
-def format_message(text):
-    return html.escape(text).replace("\n", "<br>")
+CONFIG = {
+    "configurable": {
+        "thread_id": "thread-1"
+    }
+}
 
-# -----------------------------
+# =========================================================
 # SESSION STATE
-# -----------------------------
+# =========================================================
+
 if "message_history" not in st.session_state:
-    st.session_state.message_history = []
+    st.session_state["message_history"] = []
 
-# -----------------------------
-# CUSTOM UI
-# -----------------------------
-st.markdown("""
-<style>
-.message-row { display: flex; padding: 10px 0; }
-.message-row-user { justify-content: flex-end; }
-.message-row-assistant { justify-content: flex-start; }
+# =========================================================
+# LOAD CHAT HISTORY
+# =========================================================
 
-.user-message {
-    background: #f1f3f5;
-    padding: 10px 14px;
-    border-radius: 10px;
-    max-width: 75%;
-}
+for message in st.session_state["message_history"]:
 
-.assistant-message {
-    padding: 10px 14px;
-    max-width: 80%;
-}
+    with st.chat_message(message["role"]):
 
-.badge {
-    font-size: 12px;
-    font-weight: bold;
-    margin-bottom: 4px;
-    color: #555;
-}
-</style>
-""", unsafe_allow_html=True)
+        st.markdown(message["content"])
 
-# -----------------------------
-# SHOW CHAT HISTORY
-# -----------------------------
-for msg in st.session_state.message_history:
+# =========================================================
+# USER INPUT
+# =========================================================
 
-    # -------------------------
-    # SAFE NORMALIZATION
-    # -------------------------
-    if isinstance(msg, dict):
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-    else:
-        # fallback if string or broken entry
-        role = "assistant"
-        content = str(msg)
+user_input = st.chat_input(
+    "Ask about logs, users, cards, correlation IDs..."
+)
 
-    # -------------------------
-    # RENDER USER MESSAGE
-    # -------------------------
-    if role == "user":
-        st.markdown(f"""
-        <div class="message-row message-row-user">
-            <div class="user-message">{format_message(content)}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # -------------------------
-    # RENDER ASSISTANT MESSAGE
-    # -------------------------
-    else:
-        st.markdown(f"""
-        <div class="message-row message-row-assistant">
-            <div>
-                <div class="badge">🤖 LogAnalyzer</div>
-                <div class="assistant-message">{format_message(content)}</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-# -----------------------------
-# INPUT
-# -----------------------------
-user_input = st.chat_input("Ask about logs, errors, CorrelationId, driver issues...")
+# =========================================================
+# MAIN FLOW
+# =========================================================
 
 if user_input:
 
-    # Save user message
-    st.session_state.message_history.append(
-        {"role": "user", "content": user_input}
+    # -----------------------------------------------------
+    # SAVE USER MESSAGE
+    # -----------------------------------------------------
+
+    st.session_state["message_history"].append(
+        {
+            "role": "user",
+            "content": user_input
+        }
     )
 
-    # Display user message immediately
-    st.markdown(f"""
-    <div class="message-row message-row-user">
-        <div class="user-message">{format_message(user_input)}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    with st.chat_message("user"):
 
-    # -----------------------------
-    # GRAPH INPUT STATE (CLEAN)
-    # -----------------------------
+        st.markdown(user_input)
+
+    # -----------------------------------------------------
+    # INITIAL GRAPH STATE
+    # -----------------------------------------------------
+
     initial_state = {
+
+        # question
         "question": user_input,
+
+        # retrieval
         "retrieval_query": user_input,
         "rewrite_tries": 0,
+        "need_retrieval": True,
+
+        # documents
         "docs": [],
         "relevant_docs": [],
+
+        # answer/context
         "context": "",
         "answer": "",
-        "issup": "",
+
+        # support verification
+        "issup": "no_support",
         "evidence": [],
         "retries": 0,
+
+        # usefulness
         "isuse": "not_useful",
         "use_reason": "",
-        "message_history": st.session_state.message_history,
     }
 
-    # -----------------------------
-    # RUN AGENT
-    # -----------------------------
-    with st.spinner("🔍 Analyzing logs and tracing incident flow..."):
+    # -----------------------------------------------------
+    # RUN GRAPH
+    # -----------------------------------------------------
+
+    with st.spinner("Analyzing logs..."):
+
         result = app.invoke(
             initial_state,
-            config={"recursion_limit": 80},
+            config={
+                "recursion_limit": 80
+            }
         )
 
-    # -----------------------------
-    # UPDATE CHAT HISTORY (IMPORTANT FIX)
-    # -----------------------------
-    st.session_state.message_history = result.get(
-    "message_history",
-    st.session_state.message_history
+    ai_message = result.get(
+        "answer",
+        "No answer found."
     )
 
-    ai_message = result.get("answer", "No response generated.")
+    # =====================================================
+    # ASSISTANT RESPONSE
+    # =====================================================
 
-    st.session_state.message_history.append(
-        {"role": "assistant", "content": ai_message}
+    with st.chat_message("assistant"):
+
+        st.markdown(ai_message)
+
+        # -------------------------------------------------
+        # OPTIONAL DEBUG DETAILS
+        # -------------------------------------------------
+
+        with st.expander("🔍 Investigation Details"):
+
+            st.markdown("### Retrieval")
+
+            st.write(
+                "Need Retrieval:",
+                result.get("need_retrieval")
+            )
+
+            st.write(
+                "Rewrite Tries:",
+                result.get("rewrite_tries", 0)
+            )
+
+            st.write(
+                "Retrieved Docs:",
+                len(result.get("docs", []))
+            )
+
+            st.write(
+                "Relevant Docs:",
+                len(result.get("relevant_docs", []))
+            )
+
+            st.markdown("---")
+
+            st.markdown("### Verification")
+
+            st.write(
+                "Support Status:",
+                result.get("issup")
+            )
+
+            evidence = result.get(
+                "evidence",
+                []
+            )
+
+            if evidence:
+
+                st.markdown("#### Evidence")
+
+                for item in evidence:
+
+                    st.code(item)
+
+            st.markdown("---")
+
+            st.markdown("### Usefulness")
+
+            st.write(
+                "Usefulness:",
+                result.get("isuse")
+            )
+
+            st.write(
+                "Reason:",
+                result.get("use_reason")
+            )
+
+    # -----------------------------------------------------
+    # SAVE ASSISTANT MESSAGE
+    # -----------------------------------------------------
+
+    st.session_state["message_history"].append(
+        {
+            "role": "assistant",
+            "content": ai_message
+        }
     )
-
-    # -----------------------------
-    # DISPLAY RESPONSE
-    # -----------------------------
-    st.markdown(f"""
-    <div class="message-row message-row-assistant">
-        <div>
-            <div class="badge">🤖 LogAnalyzer</div>
-            <div class="assistant-message">{format_message(ai_message)}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # -----------------------------
-    # DEBUG INFO
-    # -----------------------------
-    st.divider()
-
-    if result.get("issup"):
-        st.markdown(f"**📊 Support Level:** `{result['issup']}`")
-
-    if result.get("isuse"):
-        st.markdown(f"**✅ Usefulness:** `{result['isuse']}`")
-
-    if result.get("evidence"):
-        st.markdown("**🔍 Evidence:**")
-        for e in result["evidence"]:
-            st.markdown(f"- {e}")
