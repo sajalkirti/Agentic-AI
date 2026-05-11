@@ -1,7 +1,19 @@
 import streamlit as st
-
+from self_rag_step7 import save_memory
 from self_rag_step7 import app
 
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+
+if "message_history" not in st.session_state:
+    st.session_state["message_history"] = []
+    
+if "memory_store" not in st.session_state:
+    st.session_state["memory_store"] = []
+
+    
 # =========================================================
 # PAGE CONFIG
 # =========================================================
@@ -24,12 +36,6 @@ CONFIG = {
     }
 }
 
-# =========================================================
-# SESSION STATE
-# =========================================================
-
-if "message_history" not in st.session_state:
-    st.session_state["message_history"] = []
 
 # =========================================================
 # LOAD CHAT HISTORY
@@ -191,7 +197,15 @@ if user_input:
                 "Reason:",
                 result.get("use_reason")
             )
-
+    # SAVE MEMORY
+    save_memory(
+        question=user_input,
+        answer=result["answer"]
+    )
+    st.session_state["memory_store"].append({
+    "question": user_input,
+    "answer": result["answer"]
+    })
     # -----------------------------------------------------
     # SAVE ASSISTANT MESSAGE
     # -----------------------------------------------------

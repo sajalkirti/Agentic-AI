@@ -17,10 +17,16 @@ from langgraph.graph import StateGraph, START, END
 from dotenv import load_dotenv
 
 load_dotenv()
-
+memory_store = []
 # =========================================================
 # LOAD DATA
 # =========================================================
+def extract_ids(text):
+    req = re.findall(r"REQ-[A-Z0-9]+", text)
+    card = re.findall(r"CARD-\d+", text)
+    user = re.findall(r"driver\d+", text)
+    return set(req + card + user)
+
 
 project_folder = os.path.join(
     os.path.dirname(__file__),
@@ -131,6 +137,9 @@ vector_store = FAISS.from_documents(
     embeddings
 )
 
+memory_embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
+memory_vectorstore = None
+
 retriever = vector_store.as_retriever(
     search_type="mmr",
     search_kwargs={
@@ -232,6 +241,104 @@ should_retrieve_llm = llm.with_structured_output(
     RetrieveDecision
 )
 
+def search_memory(question: str):
+
+    # exact match
+    q = question.lower().strip()
+
+    for item in memory_store:
+
+        if q == item["question"].lower().strip():
+
+            print("✅ Exact memory hit")
+
+            return item["answer"]
+
+    # semantic match
+
+    global memory_vectorstore
+
+    if memory_vectorstore is None:
+        return None
+
+    results = memory_vectorstore.similarity_search_with_score(
+    question,
+    k=1
+    )
+
+    if not results:
+        return None
+
+    doc, score = results[0]
+
+    stored_question = doc.metadata["question"].lower()
+    current_question = question.lower()
+
+    shared_words = (
+        set(stored_question.split())
+        &
+        set(current_question.split())
+    )
+
+    print("Similarity:", score)
+    print("Shared words:", shared_words)
+
+    THRESHOLD = 0.85
+
+    stored_ids = extract_ids(stored_question)
+    current_ids = extract_ids(question)
+    id_match = len(stored_ids & current_ids) > 0
+
+    if score < THRESHOLD:
+
+        if id_match:
+            print("✅ Strong ID memory hit")
+            return doc.metadata["answer"]
+
+        if len(shared_words) >= 3:
+            print("⚠️ Weak semantic hit")
+            return doc.metadata["answer"]
+
+    return None
+
+
+
+
+def save_memory(question: str, answer: str):
+
+    global memory_vectorstore
+
+    # exact memory
+    memory_store.append({
+        "question": question,
+        "answer": answer
+    })
+
+    text = f"Q: {question}\nA: {answer}"
+
+    # first memory
+    if memory_vectorstore is None:
+
+        memory_vectorstore = FAISS.from_texts(
+            [text],
+            memory_embeddings,
+            metadatas=[{
+                "question": question,
+                "answer": answer
+            }]
+        )
+
+    # add to existing memory
+    else:
+
+        memory_vectorstore.add_texts(
+            texts=[text],
+            metadatas=[{
+                "question": question,
+                "answer": answer
+            }]
+        )
+
 def decide_retrieval(state: State):
 
     decision = should_retrieve_llm.invoke(
@@ -282,11 +389,34 @@ direct_generation_prompt = ChatPromptTemplate.from_messages(
 
 def generate_direct(state: State):
 
+    # CHECK MEMORY FIRST
+    memory_answer = search_memory(
+        state["question"]
+    )
+
+    if memory_answer:
+
+        print("✅ Answer retrieved from memory")
+
+        return {
+            "answer": memory_answer
+        }
+
+    # NORMAL LLM FLOW
     out = llm.invoke(
         direct_generation_prompt.format_messages(
             question=state["question"]
         )
     )
+
+    # SAVE TO MEMORY
+    if not memory_answer:
+        save_memory(
+            state["question"],
+            out.content
+        )
+
+    print("💾 Answer saved to memory")
 
     return {
         "answer": out.content
@@ -560,6 +690,19 @@ rag_generation_prompt = ChatPromptTemplate.from_messages(
 )
 
 def generate_from_context(state: State):
+    # CHECK MEMORY FIRST
+    memory_answer = search_memory(
+        state["question"]
+    )
+
+    if memory_answer:
+
+        print("✅ Answer retrieved from memory")
+
+        return {
+            "answer": memory_answer,
+            "context": "memory"
+        }
 
     context = "\n\n---\n\n".join(
         [
@@ -584,6 +727,15 @@ def generate_from_context(state: State):
             context=context
         )
     )
+
+    # SAVE TO MEMORY
+    if not memory_answer:
+        save_memory(
+            state["question"],
+            out.content
+        )
+
+    print("💾 Answer saved to memory")
 
     return {
         "answer": out.content,
