@@ -17,15 +17,78 @@ from langgraph.graph import StateGraph, START, END
 from dotenv import load_dotenv
 
 load_dotenv()
-memory_store = []
+
+if not os.getenv("OPENAI_API_KEY"):
+    raise RuntimeError(
+        "OPENAI_API_KEY is not set. Add it to self-rag/.env before running."
+    )
+
 # =========================================================
 # LOAD DATA
 # =========================================================
 def extract_ids(text):
-    req = re.findall(r"REQ-[A-Z0-9]+", text)
-    card = re.findall(r"CARD-\d+", text)
-    user = re.findall(r"driver\d+", text)
+    # Normalize case so matching works regardless of how the user typed the id,
+    # and tolerate the optional underscore some generators use (driver_45).
+    t = text.upper()
+    req = re.findall(r"REQ-[A-Z0-9]+", t)
+    card = re.findall(r"CARD-\d+", t)
+    user = re.findall(r"DRIVER_?\d+", t)
     return set(req + card + user)
+
+
+# Captures an id that directly follows a first-person identity phrase, e.g.
+# "I am driver002", "I'm driver002", "this is driver002", "my card is CARD-10011".
+# A bare mention like "tell me about driver020" is NOT captured.
+_identity_pattern = re.compile(
+    r"(?:\bi\s*am\b|\bi'?m\b|\bthis is\b|"
+    r"\bmy (?:user\s*id|driver\s*id|id|email|card)\b)\s*"
+    r"(?:is|=|:|the|a|an|user)?\s*"
+    # email first so its 'driver...' prefix isn't grabbed by the driver pattern
+    r"([a-zA-Z0-9._%+-]+@shellfleet\.com|CARD-\d+|driver_?\d+)",
+    re.IGNORECASE,
+)
+
+
+def detect_identity(text):
+    """Extract a self-identification from a first-person statement.
+
+    Returns a dict like {"user_id": "driver002"} when the user states who they
+    are, or {} when the message is not a first-person identity claim.
+    """
+    ids = {}
+
+    for match in _identity_pattern.finditer(text):
+        value = match.group(1)
+        low = value.lower()
+
+        # check '@' before 'driver' since emails start with 'driver...' too
+        if "@" in low:
+            ids["email"] = low
+        elif low.startswith("card"):
+            ids["card_id"] = value.upper()
+        elif low.startswith("driver"):
+            ids["user_id"] = low
+
+    return ids
+
+
+def identity_context(identity):
+    """Render a stored identity dict into a context string for prompts/retrieval."""
+    if not identity:
+        return ""
+
+    parts = []
+    if identity.get("user_id"):
+        parts.append(f"user_id: {identity['user_id']}")
+    if identity.get("email"):
+        parts.append(f"email: {identity['email']}")
+    if identity.get("card_id"):
+        parts.append(f"card_id: {identity['card_id']}")
+
+    if not parts:
+        return ""
+
+    return "Known user identity — " + ", ".join(parts) + "."
 
 
 project_folder = os.path.join(
@@ -50,7 +113,11 @@ for filename in xlsx_files:
         filename
     )
 
-    df = pd.read_excel(file_path)
+    try:
+        df = pd.read_excel(file_path)
+    except Exception as e:
+        print(f"⚠️ Could not read {filename}: {e}")
+        continue
 
     for _, row in df.iterrows():
 
@@ -111,6 +178,11 @@ for filename in xlsx_files:
 
 print(f"Total documents loaded: {len(docs)}")
 
+if not docs:
+    raise RuntimeError(
+        "No log documents loaded. Check the Enhanced*.xlsx files in documents/."
+    )
+
 print(
     docs[0].page_content[:500]
 )
@@ -132,13 +204,28 @@ embeddings = OpenAIEmbeddings(
     model="text-embedding-3-large"
 )
 
-vector_store = FAISS.from_documents(
-    chunks,
-    embeddings
+# Persist the index so we don't re-embed every doc on each run/reload.
+# Delete the .faiss_index dir to force a rebuild after the logs change.
+index_dir = os.path.join(
+    os.path.dirname(__file__),
+    ".faiss_index"
 )
 
-memory_embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-memory_vectorstore = None
+if os.path.isdir(index_dir):
+    print(f"Loading cached FAISS index from {index_dir}")
+    vector_store = FAISS.load_local(
+        index_dir,
+        embeddings,
+        allow_dangerous_deserialization=True
+    )
+else:
+    print("Building FAISS index (first run, embedding all docs)...")
+    vector_store = FAISS.from_documents(
+        chunks,
+        embeddings
+    )
+    vector_store.save_local(index_dir)
+    print(f"Saved FAISS index to {index_dir}")
 
 retriever = vector_store.as_retriever(
     search_type="mmr",
@@ -170,6 +257,10 @@ class State(TypedDict):
 
     question: str
 
+    # conversation context (carried in from the frontend each turn)
+    history: str
+    user_context: str
+
     retrieval_query: str
     rewrite_tries: int
 
@@ -180,6 +271,8 @@ class State(TypedDict):
 
     context: str
     answer: str
+
+    from_memory: bool
 
     issup: Literal[
         "fully_supported",
@@ -241,103 +334,113 @@ should_retrieve_llm = llm.with_structured_output(
     RetrieveDecision
 )
 
-def search_memory(question: str):
+class ConversationMemory:
+    """Per-conversation Q&A cache: an exact-match list plus a semantic FAISS index.
 
-    # exact match
-    q = question.lower().strip()
+    Create one instance per user session (see streamlit_frontend.py). The
+    module-level _default_memory below is only a fallback for standalone runs,
+    so memory is NOT shared across browser sessions.
+    """
 
-    for item in memory_store:
+    # similarity_search_with_score returns L2 DISTANCE (lower = more similar),
+    # not a similarity score. A hit must be strictly below this distance.
+    MAX_DISTANCE = 0.85
+    MIN_SHARED_WORDS = 3
 
-        if q == item["question"].lower().strip():
+    def __init__(self, embeddings):
+        self.embeddings = embeddings
+        self.store = []          # [{"question", "answer"}] for exact match
+        self.vectorstore = None  # FAISS, lazily created on first save
 
-            print("✅ Exact memory hit")
+    def search(self, question: str, scope: str = ""):
 
-            return item["answer"]
+        # exact match (same question AND same identity scope)
+        q = question.lower().strip()
+        for item in self.store:
+            if q == item["question"].lower().strip() and item.get("scope", "") == scope:
+                print("✅ Exact memory hit")
+                return item["answer"]
 
-    # semantic match
+        # semantic match
+        if self.vectorstore is None:
+            return None
 
-    global memory_vectorstore
+        results = self.vectorstore.similarity_search_with_score(question, k=1)
+        if not results:
+            return None
 
-    if memory_vectorstore is None:
-        return None
+        doc, distance = results[0]
+        print("Distance:", distance)
 
-    results = memory_vectorstore.similarity_search_with_score(
-    question,
-    k=1
-    )
+        if distance >= self.MAX_DISTANCE:
+            return None
 
-    if not results:
-        return None
+        # Identity scope must match: never reuse one identity's answer for
+        # another (or a scoped answer for an unscoped question).
+        if doc.metadata.get("scope", "") != scope:
+            return None
 
-    doc, score = results[0]
+        stored_question = doc.metadata["question"]
+        stored_ids = extract_ids(stored_question)
+        current_ids = extract_ids(question)
 
-    stored_question = doc.metadata["question"].lower()
-    current_question = question.lower()
-
-    shared_words = (
-        set(stored_question.split())
-        &
-        set(current_question.split())
-    )
-
-    print("Similarity:", score)
-    print("Shared words:", shared_words)
-
-    THRESHOLD = 0.85
-
-    stored_ids = extract_ids(stored_question)
-    current_ids = extract_ids(question)
-    id_match = len(stored_ids & current_ids) > 0
-
-    if score < THRESHOLD:
-
-        if id_match:
+        # A shared identifier (REQ / CARD / driver) ties both questions to the
+        # same entity -> safe to reuse the cached answer.
+        if stored_ids & current_ids:
             print("✅ Strong ID memory hit")
             return doc.metadata["answer"]
 
-        if len(shared_words) >= 3:
-            print("⚠️ Weak semantic hit")
-            return doc.metadata["answer"]
+        # Fuzzy word-overlap fallback ONLY when neither question mentions an
+        # identifier. Otherwise two questions about *different* entities
+        # (e.g. driver10 vs driver20) could share enough words to wrongly
+        # reuse each other's answer.
+        if not stored_ids and not current_ids:
+            shared_words = (
+                set(stored_question.lower().split())
+                & set(question.lower().split())
+            )
+            if len(shared_words) >= self.MIN_SHARED_WORDS:
+                print("⚠️ Weak semantic hit")
+                return doc.metadata["answer"]
 
-    return None
+        return None
 
-
-
-
-def save_memory(question: str, answer: str):
-
-    global memory_vectorstore
-
-    # exact memory
-    memory_store.append({
-        "question": question,
-        "answer": answer
-    })
-
-    text = f"Q: {question}\nA: {answer}"
-
-    # first memory
-    if memory_vectorstore is None:
-
-        memory_vectorstore = FAISS.from_texts(
-            [text],
-            memory_embeddings,
-            metadatas=[{
-                "question": question,
-                "answer": answer
-            }]
+    def save(self, question: str, answer: str, scope: str = ""):
+        self.store.append(
+            {"question": question, "answer": answer, "scope": scope}
         )
 
-    # add to existing memory
-    else:
+        # Embed the QUESTION only so similarity reflects the question, not the
+        # answer text or the identity scope (scope is matched separately).
+        metadata = {"question": question, "answer": answer, "scope": scope}
 
-        memory_vectorstore.add_texts(
-            texts=[text],
-            metadatas=[{
-                "question": question,
-                "answer": answer
-            }]
-        )
+        if self.vectorstore is None:
+            self.vectorstore = FAISS.from_texts(
+                [question], self.embeddings, metadatas=[metadata]
+            )
+        else:
+            self.vectorstore.add_texts(texts=[question], metadatas=[metadata])
+
+        print("💾 Answer saved to memory")
+
+
+# Fallback memory for standalone runs; the Streamlit frontend injects a
+# per-session instance via config={"configurable": {"memory": ...}}.
+_default_memory = ConversationMemory(embeddings)
+
+
+def new_memory():
+    """Factory for a fresh per-session memory (used by the Streamlit frontend)."""
+    return ConversationMemory(embeddings)
+
+
+def get_memory(config):
+    """Return the session-scoped memory from the run config, or the fallback."""
+    if config:
+        mem = config.get("configurable", {}).get("memory")
+        if mem is not None:
+            return mem
+    return _default_memory
 
 def decide_retrieval(state: State):
 
@@ -373,53 +476,59 @@ direct_generation_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Answer using only your general knowledge.\n"
-            "If the question requires specific information from logs, DB records, "
-            "application traces, analytics traces, user identifiers, card identifiers, "
-            "or correlation IDs, respond with:\n\n"
+            "You are a helpful assistant for the ShellFleet log analysis tool.\n"
+            "Answer using your general knowledge and the conversation context below.\n\n"
+
+            "USER CONTEXT (facts the user has stated about themselves this session):\n"
+            "{user_context}\n\n"
+
+            "- If the user asks about their own identity (e.g. 'who am I') and the "
+            "USER CONTEXT contains it, answer directly from that context.\n"
+            "- If the question requires specific details from logs, DB records, "
+            "application traces, analytics, or identifiers that are NOT in the user "
+            "context, respond with:\n"
             "'I don't know based on my general knowledge.'"
         ),
 
         (
             "human",
-            "{question}"
+            "Conversation so far:\n{history}\n\n"
+            "Question: {question}"
         ),
     ]
 )
 
-def generate_direct(state: State):
+def generate_direct(state: State, config):
+
+    memory = get_memory(config)
+    scope = state.get("user_context") or ""
 
     # CHECK MEMORY FIRST
-    memory_answer = search_memory(
-        state["question"]
-    )
+    memory_answer = memory.search(state["question"], scope=scope)
 
     if memory_answer:
 
         print("✅ Answer retrieved from memory")
 
         return {
-            "answer": memory_answer
+            "answer": memory_answer,
+            "from_memory": True
         }
 
     # NORMAL LLM FLOW
     out = llm.invoke(
         direct_generation_prompt.format_messages(
-            question=state["question"]
+            question=state["question"],
+            user_context=state.get("user_context") or "(none provided)",
+            history=state.get("history") or "(no prior messages)"
         )
     )
 
-    # SAVE TO MEMORY
-    if not memory_answer:
-        save_memory(
-            state["question"],
-            out.content
-        )
-
-    print("💾 Answer saved to memory")
+    memory.save(state["question"], out.content, scope=scope)
 
     return {
-        "answer": out.content
+        "answer": out.content,
+        "from_memory": False
     }
 
 # =========================================================
@@ -428,10 +537,16 @@ def generate_direct(state: State):
 
 def retrieve(state: State):
 
-    q = (
+    question_text = (
         state.get("retrieval_query")
         or state["question"]
     )
+
+    # Append the known user identity so pronoun questions ("why did MY
+    # transaction fail?") resolve to the user's identifiers. The question is
+    # scanned first, so an explicit id in the question still takes precedence.
+    identity = state.get("user_context", "") or ""
+    scan = f"{question_text} {identity}".strip()
 
     # -----------------------------------------------------
     # CORRELATION ID
@@ -439,7 +554,7 @@ def retrieve(state: State):
 
     cid_match = re.search(
         r"(REQ-[A-Z0-9]+|CID-[A-Z0-9]+)",
-        q,
+        scan,
         re.IGNORECASE
     )
 
@@ -463,8 +578,8 @@ def retrieve(state: State):
     # -----------------------------------------------------
 
     user_match = re.search(
-        r"(driver\d+)",
-        q,
+        r"(driver_?\d+)",
+        scan,
         re.IGNORECASE
     )
 
@@ -489,7 +604,7 @@ def retrieve(state: State):
 
     email_match = re.search(
         r"([a-zA-Z0-9._%+-]+@shellfleet\.com)",
-        q,
+        scan,
         re.IGNORECASE
     )
 
@@ -514,7 +629,7 @@ def retrieve(state: State):
 
     card_match = re.search(
         r"(CARD-\d+)",
-        q,
+        scan,
         re.IGNORECASE
     )
 
@@ -534,11 +649,11 @@ def retrieve(state: State):
             return {"docs": matched}
 
     # -----------------------------------------------------
-    # VECTOR SEARCH
+    # VECTOR SEARCH (fallback)
     # -----------------------------------------------------
 
     return {
-        "docs": retriever.invoke(q)
+        "docs": retriever.invoke(question_text)
     }
 
 # =========================================================
@@ -547,9 +662,9 @@ def retrieve(state: State):
 
 class RelevanceDecision(BaseModel):
 
-    is_relevant: bool = Field(
-        ...,
-        description="Whether document is relevant"
+    relevant_indices: List[int] = Field(
+        default_factory=list,
+        description="0-based indices of the documents relevant to the issue"
     )
 is_relevant_prompt = ChatPromptTemplate.from_messages(
     [
@@ -563,7 +678,8 @@ is_relevant_prompt = ChatPromptTemplate.from_messages(
             "- DB logs\n"
             "- Analytics logs\n\n"
 
-            "Your task is to determine whether the document is relevant to the user's issue.\n\n"
+            "Your task is to determine which of the numbered documents are relevant to the user's issue.\n"
+            "Return relevant_indices: a JSON list of the 0-based indices of the relevant documents.\n\n"
 
             "IMPORTANT IDENTIFIERS:\n"
             "- correlation_id / REQ ID\n"
@@ -595,7 +711,7 @@ is_relevant_prompt = ChatPromptTemplate.from_messages(
         (
             "human",
             "Question:\n{question}\n\n"
-            "Document:\n{document}"
+            "Documents (each prefixed by its [index]):\n{documents}"
         ),
     ]
 )
@@ -607,19 +723,30 @@ relevance_llm = llm.with_structured_output(
 
 def is_relevant(state: State):
 
-    relevant_docs = []
+    docs = state.get("docs", [])
 
-    for doc in state.get("docs", []):
+    if not docs:
+        return {"relevant_docs": []}
 
-        decision = relevance_llm.invoke(
-            is_relevant_prompt.format_messages(
-                question=state["question"],
-                document=doc.page_content
-            )
+    # Single batched call instead of one LLM call per document.
+    listing = "\n\n".join(
+        f"[{i}] {d.page_content}"
+        for i, d in enumerate(docs)
+    )
+
+    decision = relevance_llm.invoke(
+        is_relevant_prompt.format_messages(
+            question=state["question"],
+            documents=listing
         )
+    )
 
-        if decision.is_relevant:
-            relevant_docs.append(doc)
+    keep = set(decision.relevant_indices)
+
+    relevant_docs = [
+        d for i, d in enumerate(docs)
+        if i in keep
+    ]
 
     return {
         "relevant_docs": relevant_docs
@@ -678,22 +805,28 @@ rag_generation_prompt = ChatPromptTemplate.from_messages(
             "'No code fix identified from logs'.\n"
             "- Do NOT hallucinate.\n"
             "- Do NOT mention 'context' or 'provided logs' in the response.\n"
-            "- Use ONLY evidence from logs."
+            "- Use ONLY evidence from logs.\n"
+            "- If USER CONTEXT identifies the user, resolve pronouns like 'my' or "
+            "'me' to that identity and address the answer to them."
         ),
 
         (
             "human",
+            "USER CONTEXT:\n{user_context}\n\n"
+            "Conversation so far:\n{history}\n\n"
             "Question:\n{question}\n\n"
             "Context:\n{context}"
         ),
     ]
 )
 
-def generate_from_context(state: State):
+def generate_from_context(state: State, config):
+
+    memory = get_memory(config)
+    scope = state.get("user_context") or ""
+
     # CHECK MEMORY FIRST
-    memory_answer = search_memory(
-        state["question"]
-    )
+    memory_answer = memory.search(state["question"], scope=scope)
 
     if memory_answer:
 
@@ -701,7 +834,8 @@ def generate_from_context(state: State):
 
         return {
             "answer": memory_answer,
-            "context": "memory"
+            "context": "memory",
+            "from_memory": True
         }
 
     context = "\n\n---\n\n".join(
@@ -718,28 +852,25 @@ def generate_from_context(state: State):
 
         return {
             "answer": "No answer found.",
-            "context": ""
+            "context": "",
+            "from_memory": False
         }
 
     out = llm.invoke(
         rag_generation_prompt.format_messages(
             question=state["question"],
-            context=context
+            context=context,
+            user_context=state.get("user_context") or "(none provided)",
+            history=state.get("history") or "(no prior messages)"
         )
     )
 
-    # SAVE TO MEMORY
-    if not memory_answer:
-        save_memory(
-            state["question"],
-            out.content
-        )
-
-    print("💾 Answer saved to memory")
+    memory.save(state["question"], out.content, scope=scope)
 
     return {
         "answer": out.content,
-        "context": context
+        "context": context,
+        "from_memory": False
     }
 
 def no_answer_found(state: State):
@@ -748,6 +879,20 @@ def no_answer_found(state: State):
         "answer": "No answer found.",
         "context": ""
     }
+
+def route_after_generate(
+    state: State
+) -> Literal[
+    "is_sup",
+    "END"
+]:
+
+    # A cached answer was already verified when first produced; skip the
+    # grounding/usefulness loop (its context is "memory", not real logs).
+    if state.get("from_memory"):
+        return "END"
+
+    return "is_sup"
 
 # =========================================================
 # ISSUP
@@ -1177,9 +1322,15 @@ g.add_conditional_edges(
     },
 )
 
-g.add_edge(
+g.add_conditional_edges(
     "generate_from_context",
-    "is_sup"
+
+    route_after_generate,
+
+    {
+        "is_sup": "is_sup",
+        "END": END,
+    },
 )
 
 g.add_conditional_edges(

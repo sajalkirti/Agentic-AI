@@ -17,7 +17,7 @@ base_time = datetime.now()
 # -----------------------------
 # FLEET ENTITIES
 # -----------------------------
-drivers = [f"driver_{i}" for i in range(1, 80)]
+drivers = [f"driver{i:03d}" for i in range(1, 80)]
 vehicles = [f"BH-FL-{str(i).zfill(4)}" for i in range(1, 200)]
 merchants = [
     "EV Charging Hub",

@@ -1,6 +1,5 @@
 import streamlit as st
-from self_rag_step7 import save_memory
-from self_rag_step7 import app
+from self_rag_step7 import app, new_memory, detect_identity, identity_context
 
 
 # =========================================================
@@ -9,11 +8,16 @@ from self_rag_step7 import app
 
 if "message_history" not in st.session_state:
     st.session_state["message_history"] = []
-    
-if "memory_store" not in st.session_state:
-    st.session_state["memory_store"] = []
 
-    
+# Per-session Q&A memory (not shared across users / browser sessions).
+if "memory" not in st.session_state:
+    st.session_state["memory"] = new_memory()
+
+# Per-session identity the user has stated about themselves (e.g. "I am driver002").
+if "identity" not in st.session_state:
+    st.session_state["identity"] = {}
+
+
 # =========================================================
 # PAGE CONFIG
 # =========================================================
@@ -25,17 +29,6 @@ st.set_page_config(
 )
 
 st.title("🛠️ ShellFleet Log Analyzer")
-
-# =========================================================
-# CONFIG
-# =========================================================
-
-CONFIG = {
-    "configurable": {
-        "thread_id": "thread-1"
-    }
-}
-
 
 # =========================================================
 # LOAD CHAT HISTORY
@@ -77,6 +70,22 @@ if user_input:
         st.markdown(user_input)
 
     # -----------------------------------------------------
+    # UPDATE IDENTITY + BUILD CONVERSATION CONTEXT
+    # -----------------------------------------------------
+
+    detected = detect_identity(user_input)
+    if detected:
+        st.session_state["identity"].update(detected)
+
+    user_context = identity_context(st.session_state["identity"])
+
+    # recent turns BEFORE the current question (capped to keep prompts small)
+    prior = st.session_state["message_history"][:-1][-6:]
+    history = "\n".join(
+        f"{m['role']}: {m['content']}" for m in prior
+    )
+
+    # -----------------------------------------------------
     # INITIAL GRAPH STATE
     # -----------------------------------------------------
 
@@ -84,6 +93,10 @@ if user_input:
 
         # question
         "question": user_input,
+
+        # conversation context
+        "history": history,
+        "user_context": user_context,
 
         # retrieval
         "retrieval_query": user_input,
@@ -97,6 +110,7 @@ if user_input:
         # answer/context
         "context": "",
         "answer": "",
+        "from_memory": False,
 
         # support verification
         "issup": "no_support",
@@ -112,14 +126,21 @@ if user_input:
     # RUN GRAPH
     # -----------------------------------------------------
 
-    with st.spinner("Analyzing logs..."):
+    try:
+        with st.spinner("Analyzing logs..."):
 
-        result = app.invoke(
-            initial_state,
-            config={
-                "recursion_limit": 80
-            }
-        )
+            result = app.invoke(
+                initial_state,
+                config={
+                    "recursion_limit": 80,
+                    "configurable": {
+                        "memory": st.session_state["memory"]
+                    }
+                }
+            )
+    except Exception as e:
+        st.error(f"Analysis failed: {e}")
+        st.stop()
 
     ai_message = result.get(
         "answer",
@@ -197,15 +218,8 @@ if user_input:
                 "Reason:",
                 result.get("use_reason")
             )
-    # SAVE MEMORY
-    save_memory(
-        question=user_input,
-        answer=result["answer"]
-    )
-    st.session_state["memory_store"].append({
-    "question": user_input,
-    "answer": result["answer"]
-    })
+    # Memory is already persisted inside the graph (per-session, via config).
+
     # -----------------------------------------------------
     # SAVE ASSISTANT MESSAGE
     # -----------------------------------------------------
@@ -216,3 +230,18 @@ if user_input:
             "content": ai_message
         }
     )
+
+# =========================================================
+# SIDEBAR: SESSION IDENTITY
+# =========================================================
+
+with st.sidebar:
+
+    st.header("Session identity")
+
+    identity = st.session_state.get("identity", {})
+
+    if identity:
+        st.json(identity)
+    else:
+        st.caption('No identity yet. Try: "I am driver002".')
