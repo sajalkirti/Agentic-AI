@@ -9,3 +9,5 @@ openpyxl
 unstructured
 networkx
 msoffcrypto-tool
+plotly
+openpyxl

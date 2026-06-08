@@ -241,63 +241,119 @@ should_retrieve_llm = llm.with_structured_output(
     RetrieveDecision
 )
 
+def normalize_text(text: str):
+
+    return re.sub(
+        r"\s+",
+        " ",
+        text.lower().strip()
+    )
+
+
 def search_memory(question: str):
 
-    # exact match
-    q = question.lower().strip()
+    global memory_vectorstore
+
+    q = normalize_text(question)
+
+    # =====================================================
+    # EXACT MATCH
+    # =====================================================
 
     for item in memory_store:
 
-        if q == item["question"].lower().strip():
+        stored_q = normalize_text(
+            item["question"]
+        )
+
+        if q == stored_q:
 
             print("✅ Exact memory hit")
 
             return item["answer"]
 
-    # semantic match
-
-    global memory_vectorstore
+    # =====================================================
+    # NO VECTORSTORE YET
+    # =====================================================
 
     if memory_vectorstore is None:
+
         return None
 
+    # =====================================================
+    # VECTOR SEARCH
+    # =====================================================
+
     results = memory_vectorstore.similarity_search_with_score(
-    question,
-    k=1
+        question,
+        k=3
     )
 
     if not results:
+
         return None
 
-    doc, score = results[0]
+    # =====================================================
+    # STRICT MATCHING
+    # =====================================================
 
-    stored_question = doc.metadata["question"].lower()
-    current_question = question.lower()
+    for doc, score in results:
 
-    shared_words = (
-        set(stored_question.split())
-        &
-        set(current_question.split())
-    )
+        stored_question = normalize_text(
+            doc.metadata["question"]
+        )
 
-    print("Similarity:", score)
-    print("Shared words:", shared_words)
+        # ---------------------------------------------
+        # EXTRACT IDS
+        # ---------------------------------------------
 
-    THRESHOLD = 0.85
+        stored_ids = extract_ids(
+            stored_question
+        )
 
-    stored_ids = extract_ids(stored_question)
-    current_ids = extract_ids(question)
-    id_match = len(stored_ids & current_ids) > 0
+        current_ids = extract_ids(
+            question
+        )
 
-    if score < THRESHOLD:
+        # ---------------------------------------------
+        # STRICT ID MATCH
+        # ---------------------------------------------
 
-        if id_match:
-            print("✅ Strong ID memory hit")
+        if current_ids:
+
+            if stored_ids == current_ids:
+
+                print(
+                    "✅ Strong ID memory hit"
+                )
+
+                return doc.metadata["answer"]
+
+            else:
+
+                continue
+
+        # ---------------------------------------------
+        # STRICT SEMANTIC THRESHOLD
+        # ---------------------------------------------
+
+        STRICT_THRESHOLD = 0.15
+
+        print(
+            f"Memory similarity score: {score}"
+        )
+
+        if score < STRICT_THRESHOLD:
+
+            print(
+                "✅ Strong semantic memory hit"
+            )
+
             return doc.metadata["answer"]
 
-        if len(shared_words) >= 3:
-            print("⚠️ Weak semantic hit")
-            return doc.metadata["answer"]
+    # =====================================================
+    # NO MATCH
+    # =====================================================
 
     return None
 
@@ -305,9 +361,13 @@ def search_memory(question: str):
 
 
 def save_memory(question: str, answer: str):
-
+    MAX_MEMORY_ITEMS = 200
     global memory_vectorstore
 
+    if len(memory_store) > MAX_MEMORY_ITEMS:
+
+        memory_store.pop(0)
+        
     # exact memory
     memory_store.append({
         "question": question,
